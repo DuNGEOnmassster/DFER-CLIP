@@ -50,6 +50,8 @@ parser.add_argument('--exper-name', type=str)
 parser.add_argument('--seed', type=int)
 parser.add_argument('--temporal-layers', type=int, default=1)
 
+parser.add_argument("--load_and_tune_prompt_learner", default=True)
+
 args = parser.parse_args()
 
 random.seed(args.seed)  
@@ -60,7 +62,7 @@ torch.cuda.manual_seed_all(args.seed)
 
 now = datetime.datetime.now()
 time_str = now.strftime("%y%m%d%H%M")
-time_str = time_str + args.exper_name
+# import pdb; pdb.set_trace()
 
 print('************************')
 for k, v in vars(args).items():
@@ -256,6 +258,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args, log_txt_path):
 
     # switch to train mode
     model.train()
+
+    import pdb; pdb.set_trace()
 
     for i, (images, target) in enumerate(train_loader):
 
