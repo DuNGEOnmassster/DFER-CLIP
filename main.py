@@ -51,6 +51,8 @@ parser.add_argument('--seed', type=int)
 parser.add_argument('--temporal-layers', type=int, default=1)
 
 parser.add_argument("--load_and_tune_prompt_learner", default=True)
+parser.add_argument("--use_facexformer", default=True)
+parser.add_argument("--facexformer_checkpoint_path", default="facexformer/ckpts/model.pt")
 
 args = parser.parse_args()
 
@@ -135,6 +137,14 @@ def main(set):
         
     model = GenerateModel(input_text=input_text, clip_model=CLIP_model, args=args)
 
+    # 20240325 Add for facexformer
+    if args.use_facexformer:
+        from facexformer.network import FaceXFormer
+        face_model = FaceXFormer().cuda()
+        face_model_checkpoint = torch.load(args.xformer_checkpoint_path, map_location="cpu")
+        face_model.load_state_dict(face_model_checkpoint['state_dict_backbone'])
+        face_model.eval()
+
     # only open learnable part
     for name, param in model.named_parameters():
         param.requires_grad = False
@@ -147,6 +157,7 @@ def main(set):
             param.requires_grad = True
 
     model = torch.nn.DataParallel(model).cuda()
+    face_model = torch.nn.DataParallel(face_model).cuda()
     
     # print params   
     print('************************')
@@ -214,10 +225,10 @@ def main(set):
             print('Current learning rate: ', current_learning_rate_0, current_learning_rate_1, current_learning_rate_2)         
             
         # train for one epoch
-        train_acc, train_los = train(train_loader, model, criterion, optimizer, epoch, args, log_txt_path)
+        train_acc, train_los = train(train_loader, model, face_model, criterion, optimizer, epoch, args, log_txt_path)
 
         # evaluate on validation set
-        val_acc, val_los = validate(val_loader, model, criterion, args, log_txt_path)
+        val_acc, val_los = validate(val_loader, model, face_model, criterion, args, log_txt_path)
         
         scheduler.step()
 
@@ -243,12 +254,12 @@ def main(set):
             f.write('The best accuracy: ' + str(best_acc.item()) + '\n')
             f.write('An epoch time: ' + str(epoch_time) + 's' + '\n')
 
-    uar, war = computer_uar_war(val_loader, model, best_checkpoint_path, log_confusion_matrix_path, log_txt_path, data_set)
+    uar, war = computer_uar_war(val_loader, model, face_model, best_checkpoint_path, log_confusion_matrix_path, log_txt_path, data_set)
     
     return uar, war
 
 
-def train(train_loader, model, criterion, optimizer, epoch, args, log_txt_path):
+def train(train_loader, model, face_model, criterion, optimizer, epoch, args, log_txt_path):
     losses = AverageMeter('Loss', ':.4f')
     top1 = AverageMeter('Accuracy', ':6.3f')
     progress = ProgressMeter(len(train_loader),
@@ -258,13 +269,29 @@ def train(train_loader, model, criterion, optimizer, epoch, args, log_txt_path):
 
     # switch to train mode
     model.train()
+    face_model.eval()
 
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
 
     for i, (images, target) in enumerate(train_loader):
 
         images = images.cuda()
         target = target.cuda()
+
+        task_landmark = torch.tensor([1]).cuda()
+        task_parsing = torch.tensor([0]).cuda()
+
+        # Get parsing mask
+        _, _, _, _, _, _, _, seg_output = face_model(images, target, task_parsing)
+        preds = seg_output.softmax(dim=1)
+        mask = torch.argmax(preds, dim=1)
+        pred_mask = mask[0].detach().cpu().numpy()
+
+        # Get landmark coordinates
+        landmark_output, _, _, _, _, _, _, _ = face_model(images, target, task_landmark)
+        image = unnormalize(images[0].detach().cpu())
+        denorm_landmarks = denorm_points(landmark_output.view(-1,68,2)[0],224,224)
+        im = visualize_landmarks(image, denorm_landmarks.detach().cpu(), (255, 255, 0))
 
         # compute output
         output = model(images)        
@@ -474,7 +501,7 @@ def plot_confusion_matrix(cm, classes, normalize=False, title='confusion matrix'
     plt.xlabel('Predicted label', fontsize=18)
     plt.tight_layout()
 
-def computer_uar_war(val_loader, model, best_checkpoint_path, log_confusion_matrix_path, log_txt_path, data_set):
+def computer_uar_war(val_loader, model, face_model, best_checkpoint_path, log_confusion_matrix_path, log_txt_path, data_set):
     
     pre_trained_dict = torch.load(best_checkpoint_path)['state_dict']
     model.load_state_dict(pre_trained_dict)
